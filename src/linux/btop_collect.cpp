@@ -19,6 +19,7 @@ tab-size = 4
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -2099,6 +2100,50 @@ namespace Mem {
 	//?* Collect total ZFS pool io stats
 	bool zfs_collect_pool_total_stats(struct disk_info &disk);
 
+	struct smart_result {
+		int temp{-1};
+		int64_t power_on_hours{-1};
+		int reallocated_sectors{-1};
+		bool available{false};
+	};
+
+	static string strip_commas(string s) {
+		s.erase(std::remove(s.begin(), s.end(), ','), s.end());
+		return s;
+	}
+
+	static smart_result run_smartctl(const string& dev_path) {
+		smart_result info;
+		const string cmd = "sudo smartctl -A " + dev_path + " 2>/dev/null";
+		FILE* pipe = popen(cmd.c_str(), "r");
+		if (not pipe) return info;
+		char buf[512];
+		while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+			const string line(buf);
+			const auto parts = ssplit(line);
+			// ATA: "ID# ATTRIBUTE_NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE"
+			if (parts.size() >= 10
+				and (parts.at(1) == "Temperature_Celsius" or parts.at(1) == "Airflow_Temperature_Cel")) {
+				try { info.temp = std::stoi(strip_commas(parts.at(9))); info.available = true; } catch (...) {}
+			}
+			else if (parts.size() >= 10 and parts.at(1) == "Power_On_Hours") {
+				try { info.power_on_hours = std::stoll(strip_commas(parts.at(9))); info.available = true; } catch (...) {}
+			}
+			else if (parts.size() >= 10 and parts.at(1) == "Reallocated_Sector_Ct") {
+				try { info.reallocated_sectors = std::stoi(strip_commas(parts.at(9))); info.available = true; } catch (...) {}
+			}
+			// NVMe: "Key: Value" format
+			else if (parts.size() >= 2 and parts.at(0) == "Temperature:" and info.temp < 0) {
+				try { info.temp = std::stoi(strip_commas(parts.at(1))); info.available = true; } catch (...) {}
+			}
+			else if (parts.size() >= 4 and parts.at(0) == "Power" and parts.at(1) == "On" and parts.at(2) == "Hours:") {
+				try { info.power_on_hours = std::stoll(strip_commas(parts.at(3))); info.available = true; } catch (...) {}
+			}
+		}
+		pclose(pipe);
+		return info;
+	}
+
 	mem_info current_mem {};
 
 	uint64_t get_totalMem() {
@@ -2519,6 +2564,53 @@ namespace Mem {
 					diskread.close();
 				}
 				old_uptime = uptime;
+
+				// Collect SMART data asynchronously when enabled
+				if (Config::getB("show_disk_smart")) {
+					static std::unordered_map<string, std::future<smart_result>> smart_futures;
+					static std::unordered_map<string, std::chrono::steady_clock::time_point> smart_timestamps;
+					static std::unordered_map<string, smart_result> smart_cache;
+
+					std::unordered_set<string> processed;
+					for (auto& [mountpoint, disk] : disks) {
+						const string stat_str = disk.stat.string();
+						if (stat_str.compare(0, 11, "/sys/block/") != 0) continue;
+
+						const fs::path stat_path(stat_str);
+						string base_devname;
+						if (stat_path.parent_path().parent_path().filename() == "block")
+							base_devname = stat_path.parent_path().filename().string();
+						else
+							base_devname = stat_path.parent_path().parent_path().filename().string();
+						if (base_devname.empty()) continue;
+						const string base_dev = "/dev/" + base_devname;
+
+						if (not processed.contains(base_dev)) {
+							processed.insert(base_dev);
+							if (smart_futures.contains(base_dev)) {
+								auto& fut = smart_futures.at(base_dev);
+								if (fut.valid() and fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+									smart_cache[base_dev] = fut.get();
+							}
+							const bool is_running = smart_futures.contains(base_dev) and smart_futures.at(base_dev).valid();
+							const bool needs_refresh = not is_running and (
+								not smart_timestamps.contains(base_dev) or
+								std::chrono::steady_clock::now() - smart_timestamps.at(base_dev) > std::chrono::seconds(60));
+							if (needs_refresh) {
+								smart_timestamps[base_dev] = std::chrono::steady_clock::now();
+								smart_futures[base_dev] = std::async(std::launch::async, run_smartctl, base_dev);
+							}
+						}
+
+						if (smart_cache.contains(base_dev)) {
+							const auto& info = smart_cache.at(base_dev);
+							disk.smart_temp = info.temp;
+							disk.smart_power_on_hours = info.power_on_hours;
+							disk.smart_reallocated_sectors = info.reallocated_sectors;
+							disk.smart_available = info.available;
+						}
+					}
+				}
 			}
 			catch (const std::exception& e) {
 				Logger::warning("Error in Mem::collect() : {}", e.what());

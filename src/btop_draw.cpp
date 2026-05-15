@@ -24,6 +24,7 @@ tab-size = 4
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 #include <fmt/format.h>
@@ -757,7 +758,8 @@ namespace Cpu {
 				const string str_watts = (watts != -1 and Config::getB("show_battery_watts") ? fmt::format("{:.2f}", watts) + 'W' : "");
 				const auto& bat_symbol = bat_symbols.at((bat_symbols.contains(status) ? status : "unknown"));
 				const int current_len = (Term::width >= 100 ? 11 : 0) + str_time.size() + str_percent.size() + str_watts.size() + to_string(Config::getI("update_ms")).size();
-				const int current_pos = Term::width - current_len - 17;
+				const int bat_right_edge = Config::getB("show_disk_smart") ? x + width : (int)Term::width;
+				const int current_pos = bat_right_edge - current_len - 17;
 
 				if ((bat_pos != current_pos or bat_len != current_len) and bat_pos > 0 and not redraw)
 					out += Mv::to(y, bat_pos) + Fx::ub + Theme::c("cpu_box") + Symbols::h_line * (bat_len + 4);
@@ -1452,6 +1454,79 @@ namespace Mem {
 		return out + Fx::reset;
 	}
 
+}
+
+namespace Smart {
+	int x = 1, y = 1, width = 20, height = 8;
+	bool shown = false, redraw = true;
+	string box;
+
+	static string extract_base_dev(const string& stat_str) {
+		if (stat_str.compare(0, 11, "/sys/block/") != 0) return "";
+		const size_t start = 11;
+		const size_t slash = stat_str.find('/', start);
+		if (slash == string::npos) return "";
+		return stat_str.substr(start, slash - start);
+	}
+
+	string draw(bool force_redraw, bool) {
+		if (Runner::stopping or not shown) return "";
+		if (force_redraw) redraw = true;
+
+		const auto& mem = Mem::collect(true);
+
+		// Deduplicate entries by physical base device
+		std::vector<std::pair<string, const Mem::disk_info*>> entries;
+		std::unordered_set<string> seen_devs;
+		for (const auto& mount : mem.disks_order) {
+			if (not mem.disks.contains(mount)) continue;
+			const auto& disk = mem.disks.at(mount);
+			if (not disk.smart_available) continue;
+			const string base_dev = extract_base_dev(disk.stat.string());
+			if (base_dev.empty() or seen_devs.contains(base_dev)) continue;
+			seen_devs.insert(base_dev);
+			entries.push_back({base_dev, &disk});
+		}
+
+		// Force full redraw when transitioning from waiting to data ready
+		static bool was_waiting = true;
+		const bool is_waiting = entries.empty();
+		if (was_waiting and not is_waiting) redraw = true;
+		was_waiting = is_waiting;
+
+		string out;
+		if (redraw) {
+			out += box;
+			redraw = false;
+		}
+
+		int cy = 1;
+		if (is_waiting and cy < height - 1) {
+			out += Mv::to(y + cy, x + 2) + Theme::c("inactive_fg") + "Waiting for SMART data...";
+		}
+
+		for (const auto& [devname, diskp] : entries) {
+			if (cy >= height - 1) break;
+			const auto& disk = *diskp;
+
+			out += Mv::to(y + cy++, x + 2) + Theme::c("title") + Fx::b
+				+ uresize(devname, width - 3) + Fx::ub + Theme::c("main_fg");
+			if (cy >= height - 1) break;
+
+			string smart_str;
+			if (disk.smart_temp >= 0)
+				smart_str += fmt::format(" {}°C", disk.smart_temp);
+			if (disk.smart_power_on_hours >= 0)
+				smart_str += fmt::format("  {}h", disk.smart_power_on_hours);
+			if (disk.smart_reallocated_sectors >= 0)
+				smart_str += fmt::format("  Rlc:{}", disk.smart_reallocated_sectors);
+
+			if (not smart_str.empty())
+				out += Mv::to(y + cy++, x + 2) + Theme::c("main_fg") + uresize(smart_str, width - 3);
+		}
+
+		return out + Fx::reset;
+	}
 }
 
 namespace Net {
@@ -2244,6 +2319,9 @@ namespace Draw {
 		Cpu::width = Mem::width = Net::width = Proc::width = 0;
 		Cpu::height = Mem::height = Net::height = Proc::height = 0;
 		Cpu::redraw = Mem::redraw = Net::redraw = Proc::redraw = true;
+		Smart::shown = false;
+		Smart::box.clear();
+		Smart::redraw = true;
 
 		Cpu::shown = boxes.contains("cpu");
 	#ifdef GPU_SUPPORT
@@ -2283,7 +2361,8 @@ namespace Draw {
 				: 0;
 		#endif
             const bool show_temp = (Config::getB("check_temp") and got_sensors);
-			width = round((double)Term::width * width_p / 100);
+			const bool show_smart = Config::getB("show_disk_smart");
+			width = round((double)Term::width * (show_smart ? 75 : width_p) / 100);
 		#ifdef GPU_SUPPORT
 			if (Gpu::shown != 0 and not (Mem::shown or Net::shown or Proc::shown)) {
 				height = Term::height - Gpu::total_height - gpus_extra_height;
@@ -2343,6 +2422,22 @@ namespace Draw {
 					b_width - (Config::getB("show_cpu_freq") and hasCpuHz ? (freq_range ? 24 : 14) : 5)
 			);
 			box += createBox(b_x, b_y, b_width, b_height, "", false, cpu_title);
+
+			if (show_smart) {
+				Smart::shown = true;
+				Smart::x = x + width;
+				Smart::y = y;
+				Smart::width = Term::width - width;
+				Smart::height = height;
+				Smart::box = createBox(Smart::x, Smart::y, Smart::width, Smart::height,
+					Theme::c("cpu_box"), true, "", "", 0);
+				Smart::box += Mv::to(Smart::y, Smart::x + 2)
+					+ Theme::c("cpu_box") + Symbols::title_left
+					+ Theme::c("hi_fg") + Fx::b + 's'
+					+ Theme::c("title") + "mart" + Fx::ub
+					+ Theme::c("cpu_box") + Symbols::title_right;
+				Input::mouse_mappings["s"] = {Smart::y, Smart::x + 3, 1, 1};
+			}
 		}
 
 	#ifdef GPU_SUPPORT

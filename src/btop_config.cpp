@@ -209,6 +209,9 @@ namespace Config {
 		{"io_graph_speeds", 	"#* Set the top speed for the io graphs in MiB/s (100 by default), use format \"mountpoint:speed\" separate disks with whitespace \" \".\n"
 								"#* Example: \"/mnt/media:100 /:20 /boot:1\"."},
 
+		{"show_disk_smart",		"#* Show SMART disk info (temperature, power-on hours, reallocated sectors) next to each disk.\n"
+								"#* Requires smartctl (smartmontools) accessible via sudo. Toggle with 's' key in mem box."},
+
 		{"swap_upload_download", "#* Swap the positions of the upload and download speed graphs. When true, upload will be on top."},
 
 		{"net_download", 		"#* Set fixed values for network graphs in Mebibits. Is only used if net_auto is also set to False."},
@@ -327,6 +330,7 @@ namespace Config {
 		{"zfs_hide_datasets", false},
 		{"show_io_stat", true},
 		{"io_mode", false},
+		{"show_disk_smart", false},
 		{"swap_upload_download", false},
 		{"base_10_sizes", false},
 		{"io_graph_combined", false},

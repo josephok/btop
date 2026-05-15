@@ -580,6 +580,12 @@ namespace Input {
 					no_update = false;
 					Draw::calcSizes();
 				}
+				else if (key == "s") {
+					Config::flip("show_disk_smart");
+					Draw::calcSizes();
+					Runner::run("all", false, true);
+					return;
+				}
 				else keep_going = true;
 
 				if (not keep_going) {

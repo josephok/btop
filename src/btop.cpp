@@ -602,6 +602,8 @@ namespace Runner {
 
 						//? Draw box
 						if (not pause_output) output += Mem::draw(mem, conf.force_redraw, conf.no_update);
+						if (not pause_output and Smart::shown)
+							output += Smart::draw(conf.force_redraw, conf.no_update);
 
 						if (Global::debug) debug_timer("mem", draw_done);
 					}

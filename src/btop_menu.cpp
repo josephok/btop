@@ -183,6 +183,7 @@ namespace Menu {
 		{"4", "Toggle PROC box."},
 		{"5", "Toggle GPU box."},
 		{"d", "Toggle disks view in MEM box."},
+		{"s", "Toggle SMART box."},
 		{"F2, o", "Shows options."},
 		{"F1, ?, h", "Shows this window."},
 		{"ctrl + z", "Sleep program and put in background."},

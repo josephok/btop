@@ -139,3 +139,9 @@ namespace Proc {
 	extern std::unordered_map<size_t, Draw::Graph> p_graphs;
 	extern std::unordered_map<size_t, int> p_counters;
 }
+
+namespace Smart {
+	extern bool shown;
+	extern bool redraw;
+	string draw(bool force_redraw = false, bool data_same = false);
+}

@@ -278,6 +278,12 @@ namespace Mem {
 		deque<long long> io_read = {};
 		deque<long long> io_write = {};
 		deque<long long> io_activity = {};
+
+		// SMART data (Linux, requires smartctl with sudo)
+		int smart_temp{-1};
+		int64_t smart_power_on_hours{-1};
+		int smart_reallocated_sectors{-1};
+		bool smart_available{false};
 	};
 
 	struct mem_info {
